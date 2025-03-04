@@ -1,1908 +1,1059 @@
-"use client"
+import streamlit as st
+import psycopg2
+import pandas as pd
+from datetime import datetime
+import hashlib
+import os
 
-import { useState } from "react"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Calendar } from "@/components/ui/calendar"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { format } from "date-fns"
-import {
-  CalendarIcon,
-  Trash2,
-  Edit,
-  Search,
-  FileText,
-  Shield,
-  Database,
-  Tag,
-  Clock,
-  Building,
-  Briefcase,
-} from "lucide-react"
-import { Textarea } from "@/components/ui/textarea"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
-import { Badge } from "@/components/ui/badge"
+# Database connection function
+def get_connection():
+    conn = psycopg2.connect(
+        host=st.secrets["db_host"],
+        database=st.secrets["db_name"],
+        user=st.secrets["db_user"],
+        password=st.secrets["db_password"]
+    )
+    return conn
 
-// Mock data for demonstration
-const initialDepartments = [
-  { department_id: 1, name: "Criminal Investigation", location: "Headquarters, 1st Floor" },
-  { department_id: 2, name: "Cyber Crime Unit", location: "Tech Building, 3rd Floor" },
-  { department_id: 3, name: "Forensics", location: "Science Wing, 2nd Floor" },
-  { department_id: 4, name: "Narcotics", location: "West Precinct, 1st Floor" },
-  { department_id: 5, name: "Homicide", location: "Headquarters, 2nd Floor" },
-]
+# Initialize database
+def init_db():
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    # Create tables
+    cur.execute('''
+    CREATE TABLE IF NOT EXISTS Department (
+        DepartmentID SERIAL PRIMARY KEY,
+        DepartmentName VARCHAR(100) NOT NULL,
+        Location VARCHAR(100),
+        ContactInfo VARCHAR(100)
+    );
+    ''')
+    
+    cur.execute('''
+    CREATE TABLE IF NOT EXISTS Role (
+        RoleID SERIAL PRIMARY KEY,
+        RoleName VARCHAR(50) NOT NULL,
+        Description TEXT,
+        PermissionLevel INTEGER NOT NULL
+    );
+    ''')
+    
+    cur.execute('''
+    CREATE TABLE IF NOT EXISTS "User" (
+        UserID SERIAL PRIMARY KEY,
+        Username VARCHAR(50) UNIQUE NOT NULL,
+        PasswordHash VARCHAR(128) NOT NULL,
+        FirstName VARCHAR(50) NOT NULL,
+        LastName VARCHAR(50) NOT NULL,
+        BadgeNumber VARCHAR(20) UNIQUE,
+        Email VARCHAR(100) UNIQUE,
+        Phone VARCHAR(20),
+        RoleID INTEGER REFERENCES Role(RoleID),
+        DepartmentID INTEGER REFERENCES Department(DepartmentID),
+        Status VARCHAR(20) DEFAULT 'Active'
+    );
+    ''')
+    
+    cur.execute('''
+    CREATE TABLE IF NOT EXISTS Case (
+        CaseID SERIAL PRIMARY KEY,
+        CaseTitle VARCHAR(100) NOT NULL,
+        Description TEXT,
+        DateOpened DATE NOT NULL,
+        Status VARCHAR(20) CHECK (Status IN ('Open', 'Closed', 'Pending', 'Suspended')),
+        Priority VARCHAR(20)
+    );
+    ''')
+    
+    cur.execute('''
+    CREATE TABLE IF NOT EXISTS EvidenceType (
+        EvidenceTypeID SERIAL PRIMARY KEY,
+        TypeName VARCHAR(50) NOT NULL,
+        Description TEXT
+    );
+    ''')
+    
+    cur.execute('''
+    CREATE TABLE IF NOT EXISTS Evidence (
+        EvidenceID SERIAL PRIMARY KEY,
+        CaseID INTEGER REFERENCES Case(CaseID),
+        EvidenceTypeID INTEGER REFERENCES EvidenceType(EvidenceTypeID),
+        Description TEXT,
+        DateCollected DATE NOT NULL,
+        LocationCollected VARCHAR(100),
+        CollectedBy INTEGER REFERENCES "User"(UserID),
+        FileHash VARCHAR(128) UNIQUE,
+        FileSize BIGINT,
+        FileFormat VARCHAR(20),
+        Status VARCHAR(20) CHECK (Status IN ('Active', 'Archived', 'Destroyed', 'Released'))
+    );
+    ''')
+    
+    cur.execute('''
+    CREATE TABLE IF NOT EXISTS AccessLog (
+        LogID SERIAL PRIMARY KEY,
+        UserID INTEGER REFERENCES "User"(UserID),
+        EvidenceID INTEGER REFERENCES Evidence(EvidenceID),
+        AccessTimestamp TIMESTAMP NOT NULL,
+        ActionType VARCHAR(50) NOT NULL,
+        IPAddress VARCHAR(50),
+        Notes TEXT
+    );
+    ''')
+    
+    cur.execute('''
+    CREATE TABLE IF NOT EXISTS ChainOfCustody (
+        CustodyID SERIAL PRIMARY KEY,
+        EvidenceID INTEGER REFERENCES Evidence(EvidenceID),
+        UserID INTEGER REFERENCES "User"(UserID),
+        ActionType VARCHAR(50) NOT NULL,
+        Timestamp TIMESTAMP NOT NULL,
+        Notes TEXT,
+        PreviousCustodianID INTEGER REFERENCES "User"(UserID)
+    );
+    ''')
+    
+    cur.execute('''
+    CREATE TABLE IF NOT EXISTS Tag (
+        TagID SERIAL PRIMARY KEY,
+        TagName VARCHAR(50) UNIQUE NOT NULL,
+        Description TEXT
+    );
+    ''')
+    
+    cur.execute('''
+    CREATE TABLE IF NOT EXISTS EvidenceTag (
+        EvidenceID INTEGER REFERENCES Evidence(EvidenceID),
+        TagID INTEGER REFERENCES Tag(TagID),
+        PRIMARY KEY (EvidenceID, TagID)
+    );
+    ''')
+    
+    # Insert sample data if tables are empty
+    cur.execute("SELECT COUNT(*) FROM Department")
+    if cur.fetchone()[0] == 0:
+        insert_sample_data(cur)
+    
+    conn.commit()
+    cur.close()
+    conn.close()
 
-const initialOfficers = [
-  {
-    officer_id: 1,
-    badge_number: "B1234",
-    name: "John Smith",
-    rank: "Detective",
-    contact: "555-1234",
-    department_id: 1,
-  },
-  {
-    officer_id: 2,
-    badge_number: "B2345",
-    name: "Sarah Johnson",
-    rank: "Sergeant",
-    contact: "555-2345",
-    department_id: 2,
-  },
-  {
-    officer_id: 3,
-    badge_number: "B3456",
-    name: "Michael Brown",
-    rank: "Officer",
-    contact: "555-3456",
-    department_id: 3,
-  },
-  {
-    officer_id: 4,
-    badge_number: "B4567",
-    name: "Emily Davis",
-    rank: "Lieutenant",
-    contact: "555-4567",
-    department_id: 4,
-  },
-  {
-    officer_id: 5,
-    badge_number: "B5678",
-    name: "Robert Wilson",
-    rank: "Detective",
-    contact: "555-5678",
-    department_id: 5,
-  },
-]
-
-const initialCases = [
-  {
-    case_id: 1,
-    case_number: "C2023-001",
-    title: "Downtown Robbery",
-    description: "Armed robbery at First National Bank",
-    status: "Active",
-    creation_date: new Date("2023-01-15"),
-  },
-  {
-    case_id: 2,
-    case_number: "C2023-002",
-    title: "Cyber Attack",
-    description: "Ransomware attack on city systems",
-    status: "Active",
-    creation_date: new Date("2023-02-20"),
-  },
-  {
-    case_id: 3,
-    case_number: "C2023-003",
-    title: "Missing Person",
-    description: "Jane Doe reported missing from residence",
-    status: "Closed",
-    creation_date: new Date("2023-03-10"),
-  },
-  {
-    case_id: 4,
-    case_number: "C2023-004",
-    title: "Drug Trafficking",
-    description: "Suspected drug distribution network",
-    status: "Active",
-    creation_date: new Date("2023-04-05"),
-  },
-  {
-    case_id: 5,
-    case_number: "C2023-005",
-    title: "Homicide Investigation",
-    description: "Victim found at riverside park",
-    status: "Active",
-    creation_date: new Date("2023-05-12"),
-  },
-]
-
-const initialOfficerCases = [
-  { officer_id: 1, case_id: 1 },
-  { officer_id: 1, case_id: 5 },
-  { officer_id: 2, case_id: 2 },
-  { officer_id: 3, case_id: 3 },
-  { officer_id: 4, case_id: 4 },
-  { officer_id: 5, case_id: 5 },
-]
-
-const initialEvidenceTypes = [
-  { evidence_type_id: 1, name: "Image", description: "Photographic evidence" },
-  { evidence_type_id: 2, name: "Video", description: "Video recordings" },
-  { evidence_type_id: 3, name: "Audio", description: "Audio recordings" },
-  { evidence_type_id: 4, name: "Document", description: "Written or printed materials" },
-  { evidence_type_id: 5, name: "Digital", description: "Computer files, emails, etc." },
-]
-
-const initialEvidence = [
-  {
-    evidence_id: 1,
-    name: "Security Camera Footage",
-    description: "Bank security camera showing robbery",
-    file_path: "/evidence/video001.mp4",
-    hash_value: "a1b2c3d4e5f6",
-    size: 256.5,
-    collection_date: new Date("2023-01-15"),
-    case_id: 1,
-    evidence_type_id: 2,
-  },
-  {
-    evidence_id: 2,
-    name: "Ransom Note",
-    description: "Digital ransom note from attackers",
-    file_path: "/evidence/note001.pdf",
-    hash_value: "f6e5d4c3b2a1",
-    size: 1.2,
-    collection_date: new Date("2023-02-21"),
-    case_id: 2,
-    evidence_type_id: 4,
-  },
-  {
-    evidence_id: 3,
-    name: "Last Known Photo",
-    description: "Last photo of missing person",
-    file_path: "/evidence/photo001.jpg",
-    hash_value: "1a2b3c4d5e6f",
-    size: 3.5,
-    collection_date: new Date("2023-03-11"),
-    case_id: 3,
-    evidence_type_id: 1,
-  },
-  {
-    evidence_id: 4,
-    name: "Phone Conversation",
-    description: "Recorded call between suspects",
-    file_path: "/evidence/audio001.mp3",
-    hash_value: "6f5e4d3c2b1a",
-    size: 45.8,
-    collection_date: new Date("2023-04-06"),
-    case_id: 4,
-    evidence_type_id: 3,
-  },
-  {
-    evidence_id: 5,
-    name: "Crime Scene Photos",
-    description: "Photos from the murder scene",
-    file_path: "/evidence/photos002.zip",
-    hash_value: "abcdef123456",
-    size: 128.7,
-    collection_date: new Date("2023-05-13"),
-    case_id: 5,
-    evidence_type_id: 1,
-  },
-]
-
-const initialChainOfCustody = [
-  {
-    custody_id: 1,
-    timestamp: new Date("2023-01-15T14:30:00"),
-    action: "Collected",
-    notes: "Retrieved from bank security office",
-    evidence_id: 1,
-    officer_id: 1,
-  },
-  {
-    custody_id: 2,
-    timestamp: new Date("2023-01-16T09:15:00"),
-    action: "Transferred",
-    notes: "Sent to digital forensics lab",
-    evidence_id: 1,
-    officer_id: 3,
-  },
-  {
-    custody_id: 3,
-    timestamp: new Date("2023-02-21T16:45:00"),
-    action: "Collected",
-    notes: "Extracted from infected system",
-    evidence_id: 2,
-    officer_id: 2,
-  },
-  {
-    custody_id: 4,
-    timestamp: new Date("2023-03-11T11:20:00"),
-    action: "Collected",
-    notes: "Provided by family member",
-    evidence_id: 3,
-    officer_id: 3,
-  },
-  {
-    custody_id: 5,
-    timestamp: new Date("2023-04-06T20:10:00"),
-    action: "Collected",
-    notes: "Obtained with warrant",
-    evidence_id: 4,
-    officer_id: 4,
-  },
-  {
-    custody_id: 6,
-    timestamp: new Date("2023-05-13T08:45:00"),
-    action: "Collected",
-    notes: "Taken at crime scene",
-    evidence_id: 5,
-    officer_id: 5,
-  },
-  {
-    custody_id: 7,
-    timestamp: new Date("2023-05-14T10:30:00"),
-    action: "Analyzed",
-    notes: "Initial forensic analysis completed",
-    evidence_id: 5,
-    officer_id: 3,
-  },
-]
-
-const initialTags = [
-  { tag_id: 1, name: "Urgent" },
-  { tag_id: 2, name: "Homicide" },
-  { tag_id: 3, name: "Robbery" },
-  { tag_id: 4, name: "Cyber" },
-  { tag_id: 5, name: "Narcotics" },
-]
-
-const initialEvidenceTags = [
-  { evidence_id: 1, tag_id: 3 },
-  { evidence_id: 2, tag_id: 4 },
-  { evidence_id: 3, tag_id: 1 },
-  { evidence_id: 4, tag_id: 5 },
-  { evidence_id: 5, tag_id: 1 },
-  { evidence_id: 5, tag_id: 2 },
-]
-
-export default function DigitalEvidenceManagementSystem() {
-  // State for each entity
-  const [departments, setDepartments] = useState(initialDepartments)
-  const [officers, setOfficers] = useState(initialOfficers)
-  const [cases, setCases] = useState(initialCases)
-  const [officerCases, setOfficerCases] = useState(initialOfficerCases)
-  const [evidenceTypes, setEvidenceTypes] = useState(initialEvidenceTypes)
-  const [evidence, setEvidence] = useState(initialEvidence)
-  const [chainOfCustody, setChainOfCustody] = useState(initialChainOfCustody)
-  const [tags, setTags] = useState(initialTags)
-  const [evidenceTags, setEvidenceTags] = useState(initialEvidenceTags)
-
-  // State for form inputs
-  const [newDepartment, setNewDepartment] = useState({ name: "", location: "" })
-  const [newOfficer, setNewOfficer] = useState({ badge_number: "", name: "", rank: "", contact: "", department_id: "" })
-  const [newCase, setNewCase] = useState({
-    case_number: "",
-    title: "",
-    description: "",
-    status: "Active",
-    creation_date: new Date(),
-  })
-  const [newOfficerCase, setNewOfficerCase] = useState({ officer_id: "", case_id: "" })
-  const [newEvidenceType, setNewEvidenceType] = useState({ name: "", description: "" })
-  const [newEvidence, setNewEvidence] = useState({
-    name: "",
-    description: "",
-    file_path: "",
-    hash_value: "",
-    size: "",
-    collection_date: new Date(),
-    case_id: "",
-    evidence_type_id: "",
-  })
-  const [newChainOfCustody, setNewChainOfCustody] = useState({
-    timestamp: new Date(),
-    action: "",
-    notes: "",
-    evidence_id: "",
-    officer_id: "",
-  })
-  const [newTag, setNewTag] = useState({ name: "" })
-  const [newEvidenceTag, setNewEvidenceTag] = useState({ evidence_id: "", tag_id: "" })
-
-  // State for edit mode
-  const [editMode, setEditMode] = useState(false)
-  const [editId, setEditId] = useState(null)
-
-  // State for search
-  const [searchTerm, setSearchTerm] = useState("")
-
-  // Function to handle adding a new department
-  const handleAddDepartment = () => {
-    if (newDepartment.name && newDepartment.location) {
-      if (editMode) {
-        setDepartments(
-          departments.map((dept) =>
-            dept.department_id === editId
-              ? { ...dept, name: newDepartment.name, location: newDepartment.location }
-              : dept,
-          ),
+# Insert sample data
+def insert_sample_data(cur):
+    # Insert departments
+    departments = [
+        ('Cybercrime Unit', 'Headquarters', 'cyber@police.gov'),
+        ('Forensics Department', 'Lab Building', 'forensics@police.gov'),
+        ('Homicide Division', 'North Precinct', 'homicide@police.gov')
+    ]
+    for dept in departments:
+        cur.execute(
+            "INSERT INTO Department (DepartmentName, Location, ContactInfo) VALUES (%s, %s, %s)",
+            dept
         )
-        setEditMode(false)
-        setEditId(null)
-      } else {
-        const newId = departments.length > 0 ? Math.max(...departments.map((dept) => dept.department_id)) + 1 : 1
-        setDepartments([...departments, { department_id: newId, ...newDepartment }])
-      }
-      setNewDepartment({ name: "", location: "" })
-    }
-  }
-
-  // Function to handle adding a new officer
-  const handleAddOfficer = () => {
-    if (newOfficer.badge_number && newOfficer.name && newOfficer.rank && newOfficer.department_id) {
-      if (editMode) {
-        setOfficers(
-          officers.map((officer) =>
-            officer.officer_id === editId
-              ? {
-                  ...officer,
-                  badge_number: newOfficer.badge_number,
-                  name: newOfficer.name,
-                  rank: newOfficer.rank,
-                  contact: newOfficer.contact,
-                  department_id: Number.parseInt(newOfficer.department_id),
-                }
-              : officer,
-          ),
+    
+    # Insert roles
+    roles = [
+        ('Administrator', 'Full system access', 100),
+        ('Detective', 'Case management and evidence access', 80),
+        ('Forensic Analyst', 'Evidence analysis and documentation', 70),
+        ('Officer', 'Basic evidence submission', 50),
+        ('Legal Counsel', 'Read-only access to case files', 40)
+    ]
+    for role in roles:
+        cur.execute(
+            "INSERT INTO Role (RoleName, Description, PermissionLevel) VALUES (%s, %s, %s)",
+            role
         )
-        setEditMode(false)
-        setEditId(null)
-      } else {
-        const newId = officers.length > 0 ? Math.max(...officers.map((officer) => officer.officer_id)) + 1 : 1
-        setOfficers([
-          ...officers,
-          { officer_id: newId, ...newOfficer, department_id: Number.parseInt(newOfficer.department_id) },
-        ])
-      }
-      setNewOfficer({ badge_number: "", name: "", rank: "", contact: "", department_id: "" })
-    }
-  }
-
-  // Function to handle adding a new case
-  const handleAddCase = () => {
-    if (newCase.case_number && newCase.title && newCase.status) {
-      if (editMode) {
-        setCases(
-          cases.map((c) =>
-            c.case_id === editId
-              ? {
-                  ...c,
-                  case_number: newCase.case_number,
-                  title: newCase.title,
-                  description: newCase.description,
-                  status: newCase.status,
-                  creation_date: newCase.creation_date,
-                }
-              : c,
-          ),
+    
+    # Insert users
+    users = [
+        ('admin', hashlib.sha256('admin123'.encode()).hexdigest(), 'System', 'Administrator', 'ADMIN001', 'admin@police.gov', '555-0100', 1, 1),
+        ('jsmith', hashlib.sha256('password123'.encode()).hexdigest(), 'John', 'Smith', 'DET123', 'jsmith@police.gov', '555-0101', 2, 1),
+        ('agarcia', hashlib.sha256('secure456'.encode()).hexdigest(), 'Ana', 'Garcia', 'FOR456', 'agarcia@police.gov', '555-0102', 3, 2),
+        ('mwilson', hashlib.sha256('police789'.encode()).hexdigest(), 'Mike', 'Wilson', 'OFF789', 'mwilson@police.gov', '555-0103', 4, 3),
+        ('jdoe', hashlib.sha256('legal321'.encode()).hexdigest(), 'Jane', 'Doe', 'LGL321', 'jdoe@police.gov', '555-0104', 5, 1)
+    ]
+    for user in users:
+        cur.execute(
+            'INSERT INTO "User" (Username, PasswordHash, FirstName, LastName, BadgeNumber, Email, Phone, RoleID, DepartmentID) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)',
+            user
         )
-        setEditMode(false)
-        setEditId(null)
-      } else {
-        const newId = cases.length > 0 ? Math.max(...cases.map((c) => c.case_id)) + 1 : 1
-        setCases([
-          ...cases,
-          {
-            case_id: newId,
-            ...newCase,
-          },
-        ])
-      }
-      setNewCase({ case_number: "", title: "", description: "", status: "Active", creation_date: new Date() })
-    }
-  }
-
-  // Function to handle adding a new officer-case assignment
-  const handleAddOfficerCase = () => {
-    if (newOfficerCase.officer_id && newOfficerCase.case_id) {
-      // Check if this assignment already exists
-      const exists = officerCases.some(
-        (oc) =>
-          oc.officer_id === Number.parseInt(newOfficerCase.officer_id) &&
-          oc.case_id === Number.parseInt(newOfficerCase.case_id),
-      )
-
-      if (!exists) {
-        setOfficerCases([
-          ...officerCases,
-          {
-            officer_id: Number.parseInt(newOfficerCase.officer_id),
-            case_id: Number.parseInt(newOfficerCase.case_id),
-          },
-        ])
-        setNewOfficerCase({ officer_id: "", case_id: "" })
-      }
-    }
-  }
-
-  // Function to handle adding a new evidence type
-  const handleAddEvidenceType = () => {
-    if (newEvidenceType.name) {
-      if (editMode) {
-        setEvidenceTypes(
-          evidenceTypes.map((et) =>
-            et.evidence_type_id === editId
-              ? {
-                  ...et,
-                  name: newEvidenceType.name,
-                  description: newEvidenceType.description,
-                }
-              : et,
-          ),
+    
+    # Insert cases
+    cases = [
+        ('Ransomware Attack on City Hall', 'Investigation of ransomware attack affecting city systems', '2023-01-15', 'Open', 'High'),
+        ('Corporate Data Breach', 'Investigation of data breach at TechCorp', '2023-02-20', 'Open', 'High'),
+        ('Identity Theft Ring', 'Investigation of organized identity theft operation', '2023-03-10', 'Pending', 'Medium'),
+        ('Email Phishing Campaign', 'Investigation of widespread phishing emails targeting seniors', '2023-04-05', 'Closed', 'Low'),
+        ('Social Media Harassment', 'Investigation of online harassment case', '2023-05-12', 'Open', 'Medium')
+    ]
+    for case in cases:
+        cur.execute(
+            "INSERT INTO Case (CaseTitle, Description, DateOpened, Status, Priority) VALUES (%s, %s, %s, %s, %s)",
+            case
         )
-        setEditMode(false)
-        setEditId(null)
-      } else {
-        const newId = evidenceTypes.length > 0 ? Math.max(...evidenceTypes.map((et) => et.evidence_type_id)) + 1 : 1
-        setEvidenceTypes([...evidenceTypes, { evidence_type_id: newId, ...newEvidenceType }])
-      }
-      setNewEvidenceType({ name: "", description: "" })
-    }
-  }
-
-  // Function to handle adding new evidence
-  const handleAddEvidence = () => {
-    if (
-      newEvidence.name &&
-      newEvidence.file_path &&
-      newEvidence.hash_value &&
-      newEvidence.case_id &&
-      newEvidence.evidence_type_id
-    ) {
-      if (editMode) {
-        setEvidence(
-          evidence.map((e) =>
-            e.evidence_id === editId
-              ? {
-                  ...e,
-                  name: newEvidence.name,
-                  description: newEvidence.description,
-                  file_path: newEvidence.file_path,
-                  hash_value: newEvidence.hash_value,
-                  size: Number.parseFloat(newEvidence.size),
-                  collection_date: newEvidence.collection_date,
-                  case_id: Number.parseInt(newEvidence.case_id),
-                  evidence_type_id: Number.parseInt(newEvidence.evidence_type_id),
-                }
-              : e,
-          ),
+    
+    # Insert evidence types
+    evidence_types = [
+        ('Hard Drive', 'Physical storage device'),
+        ('Email', 'Electronic mail communication'),
+        ('Image', 'Digital photograph or image file'),
+        ('Video', 'Digital video recording'),
+        ('Document', 'Text document or PDF'),
+        ('Mobile Device', 'Smartphone or tablet'),
+        ('Network Log', 'Server or network device logs'),
+        ('Social Media', 'Content from social media platforms')
+    ]
+    for etype in evidence_types:
+        cur.execute(
+            "INSERT INTO EvidenceType (TypeName, Description) VALUES (%s, %s)",
+            etype
         )
-        setEditMode(false)
-        setEditId(null)
-      } else {
-        const newId = evidence.length > 0 ? Math.max(...evidence.map((e) => e.evidence_id)) + 1 : 1
-        setEvidence([
-          ...evidence,
-          {
-            evidence_id: newId,
-            ...newEvidence,
-            size: Number.parseFloat(newEvidence.size),
-            case_id: Number.parseInt(newEvidence.case_id),
-            evidence_type_id: Number.parseInt(newEvidence.evidence_type_id),
-          },
-        ])
-
-        // Automatically create a "Collected" chain of custody record
-        const newCustodyId = chainOfCustody.length > 0 ? Math.max(...chainOfCustody.map((c) => c.custody_id)) + 1 : 1
-        setChainOfCustody([
-          ...chainOfCustody,
-          {
-            custody_id: newCustodyId,
-            timestamp: new Date(),
-            action: "Collected",
-            notes: "Initial collection",
-            evidence_id: newId,
-            officer_id: Number.parseInt(newEvidence.officer_id || "1"), // Default to first officer if not specified
-          },
-        ])
-      }
-      setNewEvidence({
-        name: "",
-        description: "",
-        file_path: "",
-        hash_value: "",
-        size: "",
-        collection_date: new Date(),
-        case_id: "",
-        evidence_type_id: "",
-      })
-    }
-  }
-
-  // Function to handle adding a new chain of custody record
-  const handleAddChainOfCustody = () => {
-    if (newChainOfCustody.action && newChainOfCustody.evidence_id && newChainOfCustody.officer_id) {
-      const newId = chainOfCustody.length > 0 ? Math.max(...chainOfCustody.map((c) => c.custody_id)) + 1 : 1
-      setChainOfCustody([
-        ...chainOfCustody,
-        {
-          custody_id: newId,
-          ...newChainOfCustody,
-          timestamp: newChainOfCustody.timestamp || new Date(),
-          evidence_id: Number.parseInt(newChainOfCustody.evidence_id),
-          officer_id: Number.parseInt(newChainOfCustody.officer_id),
-        },
-      ])
-      setNewChainOfCustody({ timestamp: new Date(), action: "", notes: "", evidence_id: "", officer_id: "" })
-    }
-  }
-
-  // Function to handle adding a new tag
-  const handleAddTag = () => {
-    if (newTag.name) {
-      if (editMode) {
-        setTags(
-          tags.map((t) =>
-            t.tag_id === editId
-              ? {
-                  ...t,
-                  name: newTag.name,
-                }
-              : t,
-          ),
+    
+    # Insert tags
+    tags = [
+        ('Urgent', 'Requires immediate attention'),
+        ('Sensitive', 'Contains sensitive information'),
+        ('Encrypted', 'Data is encrypted'),
+        ('Corrupted', 'File is partially corrupted'),
+        ('Key Evidence', 'Critical to the case')
+    ]
+    for tag in tags:
+        cur.execute(
+            "INSERT INTO Tag (TagName, Description) VALUES (%s, %s)",
+            tag
         )
-        setEditMode(false)
-        setEditId(null)
-      } else {
-        const newId = tags.length > 0 ? Math.max(...tags.map((t) => t.tag_id)) + 1 : 1
-        setTags([...tags, { tag_id: newId, ...newTag }])
-      }
-      setNewTag({ name: "" })
-    }
-  }
-
-  // Function to handle adding a new evidence-tag association
-  const handleAddEvidenceTag = () => {
-    if (newEvidenceTag.evidence_id && newEvidenceTag.tag_id) {
-      // Check if this association already exists
-      const exists = evidenceTags.some(
-        (et) =>
-          et.evidence_id === Number.parseInt(newEvidenceTag.evidence_id) &&
-          et.tag_id === Number.parseInt(newEvidenceTag.tag_id),
-      )
-
-      if (!exists) {
-        setEvidenceTags([
-          ...evidenceTags,
-          {
-            evidence_id: Number.parseInt(newEvidenceTag.evidence_id),
-            tag_id: Number.parseInt(newEvidenceTag.tag_id),
-          },
-        ])
-        setNewEvidenceTag({ evidence_id: "", tag_id: "" })
-      }
-    }
-  }
-
-  // Function to handle edit
-  const handleEdit = (id, type) => {
-    setEditMode(true)
-    setEditId(id)
-
-    switch (type) {
-      case "department":
-        const dept = departments.find((d) => d.department_id === id)
-        setNewDepartment({ name: dept.name, location: dept.location })
-        break
-      case "officer":
-        const officer = officers.find((o) => o.officer_id === id)
-        setNewOfficer({
-          badge_number: officer.badge_number,
-          name: officer.name,
-          rank: officer.rank,
-          contact: officer.contact,
-          department_id: officer.department_id.toString(),
-        })
-        break
-      case "case":
-        const c = cases.find((c) => c.case_id === id)
-        setNewCase({
-          case_number: c.case_number,
-          title: c.title,
-          description: c.description,
-          status: c.status,
-          creation_date: c.creation_date,
-        })
-        break
-      case "evidence_type":
-        const et = evidenceTypes.find((et) => et.evidence_type_id === id)
-        setNewEvidenceType({
-          name: et.name,
-          description: et.description,
-        })
-        break
-      case "evidence":
-        const e = evidence.find((e) => e.evidence_id === id)
-        setNewEvidence({
-          name: e.name,
-          description: e.description,
-          file_path: e.file_path,
-          hash_value: e.hash_value,
-          size: e.size.toString(),
-          collection_date: e.collection_date,
-          case_id: e.case_id.toString(),
-          evidence_type_id: e.evidence_type_id.toString(),
-        })
-        break
-      case "tag":
-        const t = tags.find((t) => t.tag_id === id)
-        setNewTag({
-          name: t.name,
-        })
-        break
-      default:
-        break
-    }
-  }
-
-  // Function to handle delete
-  const handleDelete = (id, type) => {
-    switch (type) {
-      case "department":
-        setDepartments(departments.filter((d) => d.department_id !== id))
-        break
-      case "officer":
-        setOfficers(officers.filter((o) => o.officer_id !== id))
-        // Also delete officer-case assignments
-        setOfficerCases(officerCases.filter((oc) => oc.officer_id !== id))
-        break
-      case "case":
-        setCases(cases.filter((c) => c.case_id !== id))
-        // Also delete evidence and officer-case assignments related to this case
-        setEvidence(evidence.filter((e) => e.case_id !== id))
-        setOfficerCases(officerCases.filter((oc) => oc.case_id !== id))
-        break
-      case "officer_case":
-        setOfficerCases(officerCases.filter((oc) => !(oc.officer_id === id.officer_id && oc.case_id === id.case_id)))
-        break
-      case "evidence_type":
-        setEvidenceTypes(evidenceTypes.filter((et) => et.evidence_type_id !== id))
-        break
-      case "evidence":
-        setEvidence(evidence.filter((e) => e.evidence_id !== id))
-        // Also delete chain of custody records and evidence-tag associations
-        setChainOfCustody(chainOfCustody.filter((c) => c.evidence_id !== id))
-        setEvidenceTags(evidenceTags.filter((et) => et.evidence_id !== id))
-        break
-      case "chain_of_custody":
-        setChainOfCustody(chainOfCustody.filter((c) => c.custody_id !== id))
-        break
-      case "tag":
-        setTags(tags.filter((t) => t.tag_id !== id))
-        // Also delete evidence-tag associations
-        setEvidenceTags(evidenceTags.filter((et) => et.tag_id !== id))
-        break
-      case "evidence_tag":
-        setEvidenceTags(evidenceTags.filter((et) => !(et.evidence_id === id.evidence_id && et.tag_id === id.tag_id)))
-        break
-      default:
-        break
-    }
-  }
-
-  // Helper function to get department name by ID
-  const getDepartmentName = (id) => {
-    const department = departments.find((dept) => dept.department_id === id)
-    return department ? department.name : "Unknown"
-  }
-
-  // Helper function to get officer name by ID
-  const getOfficerName = (id) => {
-    const officer = officers.find((o) => o.officer_id === id)
-    return officer ? officer.name : "Unknown"
-  }
-
-  // Helper function to get case title by ID
-  const getCaseTitle = (id) => {
-    const c = cases.find((c) => c.case_id === id)
-    return c ? c.title : "Unknown"
-  }
-
-  // Helper function to get evidence type name by ID
-  const getEvidenceTypeName = (id) => {
-    const et = evidenceTypes.find((et) => et.evidence_type_id === id)
-    return et ? et.name : "Unknown"
-  }
-
-  // Helper function to get evidence name by ID
-  const getEvidenceName = (id) => {
-    const e = evidence.find((e) => e.evidence_id === id)
-    return e ? e.name : "Unknown"
-  }
-
-  // Helper function to get tag name by ID
-  const getTagName = (id) => {
-    const t = tags.find((t) => t.tag_id === id)
-    return t ? t.name : "Unknown"
-  }
-
-  // Helper function to get tags for an evidence item
-  const getEvidenceTags = (evidenceId) => {
-    return evidenceTags.filter((et) => et.evidence_id === evidenceId).map((et) => getTagName(et.tag_id))
-  }
-
-  // Helper function to get officers assigned to a case
-  const getCaseOfficers = (caseId) => {
-    return officerCases.filter((oc) => oc.case_id === caseId).map((oc) => getOfficerName(oc.officer_id))
-  }
-
-  // Filter function for search
-  const filterBySearchTerm = (item, type) => {
-    if (!searchTerm) return true
-
-    const term = searchTerm.toLowerCase()
-
-    switch (type) {
-      case "department":
-        return item.name.toLowerCase().includes(term) || item.location.toLowerCase().includes(term)
-      case "officer":
-        return (
-          item.name.toLowerCase().includes(term) ||
-          item.badge_number.toLowerCase().includes(term) ||
-          item.rank.toLowerCase().includes(term)
+    
+    # Insert evidence
+    evidence = [
+        (1, 1, 'City Hall server backup', '2023-01-16', 'Server Room', 3, 'a1b2c3d4e5f6', 5000000, 'IMG', 'Active'),
+        (1, 7, 'Firewall logs from attack period', '2023-01-17', 'Network Operations Center', 3, 'f6e5d4c3b2a1', 2500000, 'LOG', 'Active'),
+        (2, 6, 'CEO\'s smartphone', '2023-02-21', 'TechCorp Office', 2, '1a2b3c4d5e6f', 64000000, 'IMG', 'Active'),
+        (3, 5, 'Forged identification documents', '2023-03-12', 'Suspect\'s residence', 4, '6f5e4d3c2b1a', 15000000, 'PDF', 'Active'),
+        (4, 2, 'Phishing email samples', '2023-04-06', 'Victim\'s computer', 2, 'abcdef123456', 500000, 'EML', 'Archived')
+    ]
+    for e in evidence:
+        cur.execute(
+            "INSERT INTO Evidence (CaseID, EvidenceTypeID, Description, DateCollected, LocationCollected, CollectedBy, FileHash, FileSize, FileFormat, Status) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            e
         )
-      case "case":
-        return (
-          item.title.toLowerCase().includes(term) ||
-          item.case_number.toLowerCase().includes(term) ||
-          (item.description && item.description.toLowerCase().includes(term))
+    
+    # Insert evidence tags
+    evidence_tags = [
+        (1, 5),  # City Hall server backup - Key Evidence
+        (1, 1),  # City Hall server backup - Urgent
+        (2, 3),  # Firewall logs - Encrypted
+        (3, 2),  # CEO's smartphone - Sensitive
+        (4, 5),  # Forged documents - Key Evidence
+        (5, 4)   # Phishing email - Corrupted
+    ]
+    for et in evidence_tags:
+        cur.execute(
+            "INSERT INTO EvidenceTag (EvidenceID, TagID) VALUES (%s, %s)",
+            et
         )
-      case "evidence":
-        return (
-          item.name.toLowerCase().includes(term) || (item.description && item.description.toLowerCase().includes(term))
+    
+    # Insert chain of custody records
+    custody_records = [
+        (1, 3, 'Collected', '2023-01-16 10:30:00', 'Initial seizure', None),
+        (1, 2, 'Transferred', '2023-01-17 09:15:00', 'For analysis', 3),
+        (2, 3, 'Collected', '2023-01-17 14:45:00', 'Initial seizure', None),
+        (3, 2, 'Collected', '2023-02-21 11:20:00', 'Initial seizure', None),
+        (4, 4, 'Collected', '2023-03-12 16:10:00', 'Initial seizure', None),
+        (5, 2, 'Collected', '2023-04-06 13:30:00', 'Initial seizure', None),
+        (5, 3, 'Transferred', '2023-04-07 10:00:00', 'For analysis', 2),
+        (5, 1, 'Archived', '2023-04-20 15:45:00', 'Case closed', 3)
+    ]
+    for cr in custody_records:
+        cur.execute(
+            "INSERT INTO ChainOfCustody (EvidenceID, UserID, ActionType, Timestamp, Notes, PreviousCustodianID) VALUES (%s, %s, %s, %s, %s, %s)",
+            cr
         )
-      case "evidence_type":
-        return (
-          item.name.toLowerCase().includes(term) || (item.description && item.description.toLowerCase().includes(term))
+    
+    # Insert access logs
+    access_logs = [
+        (1, 1, '2023-01-16 11:00:00', 'View', '192.168.1.10', 'Initial review'),
+        (2, 1, '2023-01-17 10:00:00', 'View', '192.168.1.10', 'Case assignment'),
+        (3, 2, '2023-01-17 15:00:00', 'Download', '192.168.1.11', 'Analysis preparation'),
+        (1, 3, '2023-01-18 09:30:00', 'Analyze', '192.168.1.12', 'Forensic analysis'),
+        (2, 3, '2023-01-18 14:15:00', 'Analyze', '192.168.1.12', 'Log analysis'),
+        (3, 2, '2023-02-22 10:45:00', 'View', '192.168.1.11', 'Follow-up review'),
+        (4, 4, '2023-03-13 09:00:00', 'Upload', '192.168.1.13', 'Evidence submission'),
+        (5, 2, '2023-04-07 11:30:00', 'View', '192.168.1.11', 'Initial review'),
+        (5, 3, '2023-04-08 13:20:00', 'Analyze', '192.168.1.12', 'Email header analysis')
+    ]
+    for al in access_logs:
+        cur.execute(
+            "INSERT INTO AccessLog (UserID, EvidenceID, AccessTimestamp, ActionType, IPAddress, Notes) VALUES (%s, %s, %s, %s, %s, %s)",
+            al
         )
-      case "tag":
-        return item.name.toLowerCase().includes(term)
-      default:
-        return true
-    }
-  }
 
-  return (
-    <div className="container mx-auto py-6">
-      <h1 className="text-3xl font-bold mb-6 text-center">Digital Evidence Management System</h1>
+# Function to log access
+def log_access(user_id, evidence_id, action_type, notes=""):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO AccessLog (UserID, EvidenceID, AccessTimestamp, ActionType, IPAddress, Notes) VALUES (%s, %s, %s, %s, %s, %s)",
+        (user_id, evidence_id, datetime.now(), action_type, "127.0.0.1", notes)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
 
-      <div className="mb-4">
-        <div className="relative">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input
-            type="search"
-            placeholder="Search..."
-            className="pl-8"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
-        </div>
-      </div>
+# Function to add chain of custody record
+def add_custody_record(evidence_id, user_id, action_type, notes, previous_custodian_id=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO ChainOfCustody (EvidenceID, UserID, ActionType, Timestamp, Notes, PreviousCustodianID) VALUES (%s, %s, %s, %s, %s, %s)",
+        (evidence_id, user_id, action_type, datetime.now(), notes, previous_custodian_id)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
 
-      <Tabs defaultValue="cases">
-        <TabsList className="grid grid-cols-4 md:grid-cols-7 mb-4">
-          <TabsTrigger value="cases">
-            <Briefcase className="h-4 w-4 mr-2" />
-            Cases
-          </TabsTrigger>
-          <TabsTrigger value="evidence">
-            <FileText className="h-4 w-4 mr-2" />
-            Evidence
-          </TabsTrigger>
-          <TabsTrigger value="custody">
-            <Clock className="h-4 w-4 mr-2" />
-            Chain of Custody
-          </TabsTrigger>
-          <TabsTrigger value="officers">
-            <Shield className="h-4 w-4 mr-2" />
-            Officers
-          </TabsTrigger>
-          <TabsTrigger value="departments">
-            <Building className="h-4 w-4 mr-2" />
-            Departments
-          </TabsTrigger>
-          <TabsTrigger value="evidence_types">
-            <Database className="h-4 w-4 mr-2" />
-            Evidence Types
-          </TabsTrigger>
-          <TabsTrigger value="tags">
-            <Tag className="h-4 w-4 mr-2" />
-            Tags
-          </TabsTrigger>
-        </TabsList>
+# Function to calculate file hash
+def calculate_file_hash(file_bytes):
+    return hashlib.sha256(file_bytes).hexdigest()
 
-        {/* Cases Tab */}
-        <TabsContent value="cases">
-          <Card>
-            <CardHeader>
-              <CardTitle>Cases</CardTitle>
-              <CardDescription>Manage case records</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="case-number">Case Number</Label>
-                    <Input
-                      id="case-number"
-                      value={newCase.case_number}
-                      onChange={(e) => setNewCase({ ...newCase, case_number: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="case-title">Title</Label>
-                    <Input
-                      id="case-title"
-                      value={newCase.title}
-                      onChange={(e) => setNewCase({ ...newCase, title: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="case-status">Status</Label>
-                    <Select value={newCase.status} onValueChange={(value) => setNewCase({ ...newCase, status: value })}>
-                      <SelectTrigger id="case-status">
-                        <SelectValue placeholder="Select status" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="Active">Active</SelectItem>
-                        <SelectItem value="Pending">Pending</SelectItem>
-                        <SelectItem value="Closed">Closed</SelectItem>
-                        <SelectItem value="Archived">Archived</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Creation Date</Label>
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <Button variant="outline" className="w-full justify-start text-left font-normal">
-                          <CalendarIcon className="mr-2 h-4 w-4" />
-                          {newCase.creation_date ? format(newCase.creation_date, "PPP") : "Select date"}
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-auto p-0">
-                        <Calendar
-                          mode="single"
-                          selected={newCase.creation_date}
-                          onSelect={(date) => setNewCase({ ...newCase, creation_date: date })}
-                          initialFocus
-                        />
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-                  <div className="space-y-2 md:col-span-2">
-                    <Label htmlFor="case-description">Description</Label>
-                    <Textarea
-                      id="case-description"
-                      value={newCase.description}
-                      onChange={(e) => setNewCase({ ...newCase, description: e.target.value })}
-                      className="min-h-[100px]"
-                    />
-                  </div>
-                </div>
-                <Button onClick={handleAddCase}>{editMode ? "Update Case" : "Add Case"}</Button>
-              </div>
+# Streamlit UI
+def main():
+    st.set_page_config(page_title="Digital Evidence Management System", layout="wide")
+    
+    # Initialize database
+    try:
+        init_db()
+    except Exception as e:
+        st.error(f"Database initialization error: {e}")
+        return
+    
+    # Sidebar for navigation
+    st.sidebar.title("DEMS Navigation")
+    page = st.sidebar.selectbox(
+        "Select a page", 
+        ["Login", "Cases", "Evidence", "Users", "Reports", "Chain of Custody"]
+    )
+    
+    # Session state for login
+    if 'logged_in' not in st.session_state:
+        st.session_state.logged_in = False
+        st.session_state.user_id = None
+        st.session_state.username = None
+        st.session_state.role = None
+    
+    # Login page
+    if page == "Login" or not st.session_state.logged_in:
+        st.title("Digital Evidence Management System")
+        st.subheader("Login")
+        
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        
+        if st.button("Login"):
+            if username and password:
+                conn = get_connection()
+                cur = conn.cursor()
+                
+                # Hash the password
+                hashed_password = hashlib.sha256(password.encode()).hexdigest()
+                
+                # Check credentials
+                cur.execute(
+                    'SELECT u.UserID, u.Username, r.RoleName FROM "User" u JOIN Role r ON u.RoleID = r.RoleID WHERE u.Username = %s AND u.PasswordHash = %s AND u.Status = %s',
+                    (username, hashed_password, 'Active')
+                )
+                user = cur.fetchone()
+                
+                if user:
+                    st.session_state.logged_in = True
+                    st.session_state.user_id = user[0]
+                    st.session_state.username = user[1]
+                    st.session_state.role = user[2]
+                    st.success(f"Welcome, {user[1]}!")
+                    st.experimental_rerun()
+                else:
+                    st.error("Invalid username or password")
+                
+                cur.close()
+                conn.close()
+            else:
+                st.warning("Please enter both username and password")
+        
+        # Sample login credentials
+        st.info("Sample credentials: username: admin, password: admin123")
+        return
+    
+    # Logout button in sidebar
+    if st.sidebar.button("Logout"):
+        st.session_state.logged_in = False
+        st.session_state.user_id = None
+        st.session_state.username = None
+        st.session_state.role = None
+        st.experimental_rerun()
+    
+    st.sidebar.write(f"Logged in as: {st.session_state.username}")
+    st.sidebar.write(f"Role: {st.session_state.role}")
+    
+    # Cases page
+    if page == "Cases":
+        st.title("Case Management")
+        
+        tab1, tab2 = st.tabs(["View Cases", "Add Case"])
+        
+        with tab1:
+            st.subheader("All Cases")
+            conn = get_connection()
+            cases_df = pd.read_sql("SELECT * FROM Case ORDER BY CaseID", conn)
+            st.dataframe(cases_df)
+            
+            # Case details
+            st.subheader("Case Details")
+            case_id = st.number_input("Enter Case ID", min_value=1, step=1)
+            if st.button("View Case Details"):
+                case_df = pd.read_sql(f"SELECT * FROM Case WHERE CaseID = {case_id}", conn)
+                if not case_df.empty:
+                    st.write(case_df)
+                    
+                    # Show evidence related to this case
+                    evidence_df = pd.read_sql(f"""
+                        SELECT e.EvidenceID, e.Description, e.DateCollected, e.Status, 
+                               et.TypeName as EvidenceType, 
+                               CONCAT(u.FirstName, ' ', u.LastName) as CollectedBy
+                        FROM Evidence e
+                        JOIN EvidenceType et ON e.EvidenceTypeID = et.EvidenceTypeID
+                        JOIN "User" u ON e.CollectedBy = u.UserID
+                        WHERE e.CaseID = {case_id}
+                    """, conn)
+                    
+                    st.subheader(f"Evidence for Case #{case_id}")
+                    if not evidence_df.empty:
+                        st.dataframe(evidence_df)
+                    else:
+                        st.info("No evidence found for this case")
+                else:
+                    st.error("Case not found")
+            
+            conn.close()
+        
+        with tab2:
+            st.subheader("Add New Case")
+            case_title = st.text_input("Case Title")
+            description = st.text_area("Description")
+            date_opened = st.date_input("Date Opened")
+            status = st.selectbox("Status", ["Open", "Closed", "Pending", "Suspended"])
+            priority = st.selectbox("Priority", ["High", "Medium", "Low"])
+            
+            if st.button("Add Case"):
+                if case_title:
+                    conn = get_connection()
+                    cur = conn.cursor()
+                    try:
+                        cur.execute(
+                            "INSERT INTO Case (CaseTitle, Description, DateOpened, Status, Priority) VALUES (%s, %s, %s, %s, %s) RETURNING CaseID",
+                            (case_title, description, date_opened, status, priority)
+                        )
+                        new_case_id = cur.fetchone()[0]
+                        conn.commit()
+                        st.success(f"Case added successfully with ID: {new_case_id}")
+                    except Exception as e:
+                        conn.rollback()
+                        st.error(f"Error adding case: {e}")
+                    finally:
+                        cur.close()
+                        conn.close()
+                else:
+                    st.warning("Case title is required")
+    
+    # Evidence page
+    elif page == "Evidence":
+        st.title("Evidence Management")
+        
+        tab1, tab2, tab3 = st.tabs(["View Evidence", "Add Evidence", "Search Evidence"])
+        
+        with tab1:
+            st.subheader("All Evidence")
+            conn = get_connection()
+            evidence_df = pd.read_sql("""
+                SELECT e.EvidenceID, c.CaseTitle, e.Description, e.DateCollected, e.Status, 
+                       et.TypeName as EvidenceType, 
+                       CONCAT(u.FirstName, ' ', u.LastName) as CollectedBy
+                FROM Evidence e
+                JOIN Case c ON e.CaseID = c.CaseID
+                JOIN EvidenceType et ON e.EvidenceTypeID = et.EvidenceTypeID
+                JOIN "User" u ON e.CollectedBy = u.UserID
+                ORDER BY e.EvidenceID
+            """, conn)
+            st.dataframe(evidence_df)
+            
+            # Evidence details
+            st.subheader("Evidence Details")
+            evidence_id = st.number_input("Enter Evidence ID", min_value=1, step=1)
+            if st.button("View Evidence Details"):
+                evidence_df = pd.read_sql(f"""
+                    SELECT e.*, c.CaseTitle, et.TypeName as EvidenceType, 
+                           CONCAT(u.FirstName, ' ', u.LastName) as CollectedBy
+                    FROM Evidence e
+                    JOIN Case c ON e.CaseID = c.CaseID
+                    JOIN EvidenceType et ON e.EvidenceTypeID = et.EvidenceTypeID
+                    JOIN "User" u ON e.CollectedBy = u.UserID
+                    WHERE e.EvidenceID = {evidence_id}
+                """, conn)
+                
+                if not evidence_df.empty:
+                    st.write(evidence_df)
+                    
+                    # Show chain of custody for this evidence
+                    custody_df = pd.read_sql(f"""
+                        SELECT coc.CustodyID, coc.ActionType, coc.Timestamp, coc.Notes,
+                               CONCAT(u.FirstName, ' ', u.LastName) as Custodian,
+                               CONCAT(p.FirstName, ' ', p.LastName) as PreviousCustodian
+                        FROM ChainOfCustody coc
+                        JOIN "User" u ON coc.UserID = u.UserID
+                        LEFT JOIN "User" p ON coc.PreviousCustodianID = p.UserID
+                        WHERE coc.EvidenceID = {evidence_id}
+                        ORDER BY coc.Timestamp
+                    """, conn)
+                    
+                    st.subheader("Chain of Custody")
+                    if not custody_df.empty:
+                        st.dataframe(custody_df)
+                    else:
+                        st.info("No chain of custody records found")
+                    
+                    # Show tags for this evidence
+                    tags_df = pd.read_sql(f"""
+                        SELECT t.TagName, t.Description
+                        FROM EvidenceTag et
+                        JOIN Tag t ON et.TagID = t.TagID
+                        WHERE et.EvidenceID = {evidence_id}
+                    """, conn)
+                    
+                    st.subheader("Tags")
+                    if not tags_df.empty:
+                        st.dataframe(tags_df)
+                    else:
+                        st.info("No tags found")
+                else:
+                    st.error("Evidence not found")
+            
+            conn.close()
+        
+        with tab2:
+            st.subheader("Add New Evidence")
+            conn = get_connection()
+            
+            # Get cases for dropdown
+            cases_df = pd.read_sql("SELECT CaseID, CaseTitle FROM Case WHERE Status != 'Closed' ORDER BY CaseID", conn)
+            case_options = {row['CaseTitle']: row['CaseID'] for _, row in cases_df.iterrows()}
+            
+            # Get evidence types for dropdown
+            types_df = pd.read_sql("SELECT EvidenceTypeID, TypeName FROM EvidenceType ORDER BY TypeName", conn)
+            type_options = {row['TypeName']: row['EvidenceTypeID'] for _, row in types_df.iterrows()}
+            
+            # Form fields
+            selected_case = st.selectbox("Select Case", list(case_options.keys()))
+            selected_type = st.selectbox("Evidence Type", list(type_options.keys()))
+            description = st.text_area("Description")
+            date_collected = st.date_input("Date Collected")
+            location = st.text_input("Location Collected")
+            status = st.selectbox("Status", ["Active", "Archived", "Destroyed", "Released"])
+            
+            # File upload
+            uploaded_file = st.file_uploader("Upload Evidence File", type=["jpg", "jpeg", "png", "pdf", "txt", "zip", "mp4"])
+            
+            if st.button("Add Evidence"):
+                if selected_case and selected_type and description:
+                    cur = conn.cursor()
+                    try:
+                        file_hash = None
+                        file_size = None
+                        file_format = None
+                        
+                        if uploaded_file is not None:
+                            file_bytes = uploaded_file.getvalue()
+                            file_hash = calculate_file_hash(file_bytes)
+                            file_size = len(file_bytes)
+                            file_format = uploaded_file.name.split('.')[-1].upper()
+                        
+                        # Insert evidence
+                        cur.execute(
+                            """INSERT INTO Evidence 
+                               (CaseID, EvidenceTypeID, Description, DateCollected, LocationCollected, 
+                                CollectedBy, FileHash, FileSize, FileFormat, Status) 
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING EvidenceID""",
+                            (case_options[selected_case], type_options[selected_type], description, 
+                             date_collected, location, st.session_state.user_id, 
+                             file_hash, file_size, file_format, status)
+                        )
+                        
+                        new_evidence_id = cur.fetchone()[0]
+                        
+                        # Add initial chain of custody record
+                        cur.execute(
+                            """INSERT INTO ChainOfCustody 
+                               (EvidenceID, UserID, ActionType, Timestamp, Notes, PreviousCustodianID) 
+                               VALUES (%s, %s, %s, %s, %s, %s)""",
+                            (new_evidence_id, st.session_state.user_id, 'Collected', 
+                             datetime.now(), 'Initial collection', None)
+                        )
+                        
+                        conn.commit()
+                        st.success(f"Evidence added successfully with ID: {new_evidence_id}")
+                    except Exception as e:
+                        conn.rollback()
+                        st.error(f"Error adding evidence: {e}")
+                    finally:
+                        cur.close()
+                else:
+                    st.warning("Please fill in all required fields")
+            
+            conn.close()
+        
+        with tab3:
+            st.subheader("Search Evidence")
+            search_term = st.text_input("Search by description or case title")
+            
+            if search_term:
+                conn = get_connection()
+                search_results = pd.read_sql(f"""
+                    SELECT e.EvidenceID, c.CaseTitle, e.Description, e.DateCollected, e.Status, 
+                           et.TypeName as EvidenceType, 
+                           CONCAT(u.FirstName, ' ', u.LastName) as CollectedBy
+                    FROM Evidence e
+                    JOIN Case c ON e.CaseID = c.CaseID
+                    JOIN EvidenceType et ON e.EvidenceTypeID = et.EvidenceTypeID
+                    JOIN "User" u ON e.CollectedBy = u.UserID
+                    WHERE e.Description ILIKE '%{search_term}%' OR c.CaseTitle ILIKE '%{search_term}%'
+                    ORDER BY e.EvidenceID
+                """, conn)
+                
+                if not search_results.empty:
+                    st.dataframe(search_results)
+                else:
+                    st.info("No results found")
+                
+                conn.close()
+    
+    # Users page
+    elif page == "Users":
+        st.title("User Management")
+        
+        # Check if admin
+        if st.session_state.role != 'Administrator':
+            st.warning("You don't have permission to access this page")
+            return
+        
+        tab1, tab2 = st.tabs(["View Users", "Add User"])
+        
+        with tab1:
+            st.subheader("All Users")
+            conn = get_connection()
+            users_df = pd.read_sql("""
+                SELECT u.UserID, u.Username, u.FirstName, u.LastName, u.BadgeNumber, 
+                       u.Email, u.Phone, r.RoleName, d.DepartmentName, u.Status
+                FROM "User" u
+                JOIN Role r ON u.RoleID = r.RoleID
+                JOIN Department d ON u.DepartmentID = d.DepartmentID
+                ORDER BY u.UserID
+            """, conn)
+            st.dataframe(users_df)
+            
+            # User details and edit
+            st.subheader("Edit User")
+            user_id = st.number_input("Enter User ID to edit", min_value=1, step=1)
+            
+            if st.button("Load User"):
+                user_df = pd.read_sql(f'SELECT * FROM "User" WHERE UserID = {user_id}', conn)
+                if not user_df.empty:
+                    st.session_state.edit_user = user_df.iloc[0].to_dict()
+                    st.success("User loaded. Edit below.")
+                else:
+                    st.error("User not found")
+            
+            if 'edit_user' in st.session_state:
+                user = st.session_state.edit_user
+                
+                # Get roles and departments for dropdowns
+                roles_df = pd.read_sql("SELECT RoleID, RoleName FROM Role ORDER BY RoleName", conn)
+                role_options = {row['RoleName']: row['RoleID'] for _, row in roles_df.iterrows()}
+                
+                depts_df = pd.read_sql("SELECT DepartmentID, DepartmentName FROM Department ORDER BY DepartmentName", conn)
+                dept_options = {row['DepartmentName']: row['DepartmentID'] for _, row in depts_df.iterrows()}
+                
+                # Get current role and department names
+                cur_role = pd.read_sql(f"SELECT RoleName FROM Role WHERE RoleID = {user['RoleID']}", conn).iloc[0]['RoleName']
+                cur_dept = pd.read_sql(f"SELECT DepartmentName FROM Department WHERE DepartmentID = {user['DepartmentID']}", conn).iloc[0]['DepartmentName']
+                
+                # Edit form
+                first_name = st.text_input("First Name", user['FirstName'])
+                last_name = st.text_input("Last Name", user['LastName'])
+                badge = st.text_input("Badge Number", user['BadgeNumber'])
+                email = st.text_input("Email", user['Email'])
+                phone = st.text_input("Phone", user['Phone'])
+                selected_role = st.selectbox("Role", list(role_options.keys()), index=list(role_options.keys()).index(cur_role))
+                selected_dept = st.selectbox("Department", list(dept_options.keys()), index=list(dept_options.keys()).index(cur_dept))
+                status = st.selectbox("Status", ["Active", "Inactive", "Suspended"], index=["Active", "Inactive", "Suspended"].index(user['Status']))
+                
+                if st.button("Update User"):
+                    cur = conn.cursor()
+                    try:
+                        cur.execute(
+                            """UPDATE "User" SET 
+                               FirstName = %s, LastName = %s, BadgeNumber = %s, 
+                               Email = %s, Phone = %s, RoleID = %s, 
+                               DepartmentID = %s, Status = %s
+                               WHERE UserID = %s""",
+                            (first_name, last_name, badge, email, phone, 
+                             role_options[selected_role], dept_options[selected_dept], 
+                             status, user_id)
+                        )
+                        conn.commit()
+                        st.success("User updated successfully")
+                        # Clear the session state
+                        del st.session_state.edit_user
+                    except Exception as e:
+                        conn.rollback()
+                        st.error(f"Error updating user: {e}")
+                    finally:
+                        cur.close()
+            
+            conn.close()
+        
+        with tab2:
+            st.subheader("Add New User")
+            conn = get_connection()
+            
+            # Get roles and departments for dropdowns
+            roles_df = pd.read_sql("SELECT RoleID, RoleName FROM Role ORDER BY RoleName", conn)
+            role_options = {row['RoleName']: row['RoleID'] for _, row in roles_df.iterrows()}
+            
+            depts_df = pd.read_sql("SELECT DepartmentID, DepartmentName FROM Department ORDER BY DepartmentName", conn)
+            dept_options = {row['DepartmentName']: row['DepartmentID'] for _, row in depts_df.iterrows()}
+            
+            # Form fields
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            confirm_password = st.text_input("Confirm Password", type="password")
+            first_name = st.text_input("First Name")
+            last_name = st.text_input("Last Name")
+            badge = st.text_input("Badge Number")
+            email = st.text_input("Email")
+            phone = st.text_input("Phone")
+            selected_role = st.selectbox("Role", list(role_options.keys()))
+            selected_dept = st.selectbox("Department", list(dept_options.keys()))
+            
+            if st.button("Add User"):
+                if username and password and first_name and last_name and email:
+                    if password != confirm_password:
+                        st.error("Passwords do not match")
+                    else:
+                        cur = conn.cursor()
+                        try:
+                            # Hash the password
+                            hashed_password = hashlib.sha256(password.encode()).hexdigest()
+                            
+                            cur.execute(
+                                """INSERT INTO "User" 
+                                   (Username, PasswordHash, FirstName, LastName, BadgeNumber, 
+                                    Email, Phone, RoleID, DepartmentID, Status) 
+                                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING UserID""",
+                                (username, hashed_password, first_name, last_name, badge, 
+                                 email, phone, role_options[selected_role], 
+                                 dept_options[selected_dept], 'Active')
+                            )
+                            
+                            new_user_id = cur.fetchone()[0]
+                            conn.commit()
+                            st.success(f"User added successfully with ID: {new_user_id}")
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(f"Error adding user: {e}")
+                        finally:
+                            cur.close()
+                else:
+                    st.warning("Please fill in all required fields")
+            
+            conn.close()
+    
+    # Reports page
+    elif page == "Reports":
+        st.title("Reports")
+        
+        report_type = st.selectbox(
+            "Select Report Type", 
+            ["Evidence by Case", "Evidence by Type", "User Activity", "Chain of Custody Timeline"]
+        )
+        
+        conn = get_connection()
+        
+        if report_type == "Evidence by Case":
+            st.subheader("Evidence by Case")
+            
+            cases_df = pd.read_sql("SELECT CaseID, CaseTitle FROM Case ORDER BY CaseTitle", conn)
+            case_options = {row['CaseTitle']: row['CaseID'] for _, row in cases_df.iterrows()}
+            
+            selected_case = st.selectbox("Select Case", list(case_options.keys()))
+            
+            if st.button("Generate Report"):
+                report_df = pd.read_sql(f"""
+                    SELECT e.EvidenceID, e.Description, e.DateCollected, e.Status, 
+                           et.TypeName as EvidenceType, 
+                           CONCAT(u.FirstName, ' ', u.LastName) as CollectedBy
+                    FROM Evidence e
+                    JOIN EvidenceType et ON e.EvidenceTypeID = et.EvidenceTypeID
+                    JOIN "User" u ON e.CollectedBy = u.UserID
+                    WHERE e.CaseID = {case_options[selected_case]}
+                    ORDER BY e.DateCollected
+                """, conn)
+                
+                st.write(f"### Evidence for Case: {selected_case}")
+                if not report_df.empty:
+                    st.dataframe(report_df)
+                    
+                    # Create a bar chart of evidence types
+                    type_counts = report_df['EvidenceType'].value_counts().reset_index()
+                    type_counts.columns = ['Evidence Type', 'Count']
+                    
+                    st.write("### Evidence Types Distribution")
+                    st.bar_chart(type_counts.set_index('Evidence Type'))
+                else:
+                    st.info("No evidence found for this case")
+        
+        elif report_type == "Evidence by Type":
+            st.subheader("Evidence by Type")
+            
+            types_df = pd.read_sql("SELECT EvidenceTypeID, TypeName FROM EvidenceType ORDER BY TypeName", conn)
+            type_options = {row['TypeName']: row['EvidenceTypeID'] for _, row in types_df.iterrows()}
+            
+            selected_type = st.selectbox("Select Evidence Type", list(type_options.keys()))
+            
+            if st.button("Generate Report"):
+                report_df = pd.read_sql(f"""
+                    SELECT e.EvidenceID, c.CaseTitle, e.Description, e.DateCollected, e.Status, 
+                           CONCAT(u.FirstName, ' ', u.LastName) as CollectedBy
+                    FROM Evidence e
+                    JOIN Case c ON e.CaseID = c.CaseID
+                    JOIN "User" u ON e.CollectedBy = u.UserID
+                    WHERE e.EvidenceTypeID = {type_options[selected_type]}
+                    ORDER BY e.DateCollected
+                """, conn)
+                
+                st.write(f"### Evidence of Type: {selected_type}")
+                if not report_df.empty:
+                    st.dataframe(report_df)
+                    
+                    # Create a bar chart of cases
+                    case_counts = report_df['CaseTitle'].value_counts().reset_index()
+                    case_counts.columns = ['Case', 'Count']
+                    
+                    st.write("### Cases Distribution")
+                    st.bar_chart(case_counts.set_index('Case'))
+                else:
+                    st.info("No evidence found for this type")
+        
+        elif report_type == "User Activity":
+            st.subheader("User Activity Report")
+            
+            users_df = pd.read_sql('SELECT UserID, CONCAT(FirstName, \' \', LastName) as Name FROM "User" ORDER BY Name', conn)
+            user_options = {row['Name']: row['UserID'] for _, row in users_df.iterrows()}
+            
+            selected_user = st.selectbox("Select User", list(user_options.keys()))
+            date_range = st.date_input("Select Date Range", value=[datetime.now() - pd.Timedelta(days=30), datetime.now()])
+            
+            if st.button("Generate Report"):
+                start_date, end_date = date_range
+                end_date = end_date + pd.Timedelta(days=1)  # Include the end date
+                
+                report_df = pd.read_sql(f"""
+                    SELECT al.LogID, al.AccessTimestamp, al.ActionType, al.Notes,
+                           e.Description as Evidence, c.CaseTitle as Case
+                    FROM AccessLog al
+                    JOIN Evidence e ON al.EvidenceID = e.EvidenceID
+                    JOIN Case c ON e.CaseID = c.CaseID
+                    WHERE al.UserID = {user_options[selected_user]}
+                    AND al.AccessTimestamp BETWEEN '{start_date}' AND '{end_date}'
+                    ORDER BY al.AccessTimestamp DESC
+                """, conn)
+                
+                st.write(f"### Activity for User: {selected_user}")
+                if not report_df.empty:
+                    st.dataframe(report_df)
+                    
+                    # Create a bar chart of action types
+                    action_counts = report_df['ActionType'].value_counts().reset_index()
+                    action_counts.columns = ['Action Type', 'Count']
+                    
+                    st.write("### Action Types Distribution")
+                    st.bar_chart(action_counts.set_index('Action Type'))
+                else:
+                    st.info("No activity found for this user in the selected date range")
+        
+        elif report_type == "Chain of Custody Timeline":
+            st.subheader("Chain of Custody Timeline")
+            
+            evidence_df = pd.read_sql("""
+                SELECT e.EvidenceID, CONCAT(e.EvidenceID, ': ', e.Description) as EvidenceDesc
+                FROM Evidence e
+                ORDER BY e.EvidenceID
+            """, conn)
+            evidence_options = {row['EvidenceDesc']: row['EvidenceID'] for _, row in evidence_df.iterrows()}
+            
+            selected_evidence = st.selectbox("Select Evidence", list(evidence_options.keys()))
+            
+            if st.button("Generate Report"):
+                report_df = pd.read_sql(f"""
+                    SELECT coc.CustodyID, coc.ActionType, coc.Timestamp, coc.Notes,
+                           CONCAT(u.FirstName, ' ', u.LastName) as Custodian,
+                           CONCAT(p.FirstName, ' ', p.LastName) as PreviousCustodian
+                    FROM ChainOfCustody coc
+                    JOIN "User" u ON coc.UserID = u.UserID
+                    LEFT JOIN "User" p ON coc.PreviousCustodianID = p.UserID
+                    WHERE coc.EvidenceID = {evidence_options[selected_evidence]}
+                    ORDER BY coc.Timestamp
+                """, conn)
+                
+                st.write(f"### Chain of Custody for Evidence: {selected_evidence}")
+                if not report_df.empty:
+                    st.dataframe(report_df)
+                    
+                    # Create a timeline visualization
+                    st.write("### Timeline Visualization")
+                    
+                    for i, row in report_df.iterrows():
+                        col1, col2 = st.columns([1, 3])
+                        with col1:
+                            st.write(f"**{row['Timestamp']}**")
+                        with col2:
+                            st.write(f"**{row['ActionType']}** by {row['Custodian']}")
+                            if row['PreviousCustodian']:
+                                st.write(f"From: {row['PreviousCustodian']}")
+                            if row['Notes']:
+                                st.write(f"Notes: {row['Notes']}")
+                        st.markdown("---")
+                else:
+                    st.info("No chain of custody records found for this evidence")
+        
+        conn.close()
+    
+    # Chain of Custody page
+    elif page == "Chain of Custody":
+        st.title("Chain of Custody Management")
+        
+        tab1, tab2 = st.tabs(["View Chain of Custody", "Add Custody Record"])
+        
+        with tab1:
+            st.subheader("Chain of Custody Records")
+            conn = get_connection()
+            
+            evidence_df = pd.read_sql("""
+                SELECT e.EvidenceID, CONCAT(e.EvidenceID, ': ', e.Description) as EvidenceDesc
+                FROM Evidence e
+                ORDER BY e.EvidenceID
+            """, conn)
+            evidence_options = {row['EvidenceDesc']: row['EvidenceID'] for _, row in evidence_df.iterrows()}
+            
+            selected_evidence = st.selectbox("Select Evidence", list(evidence_options.keys()))
+            
+            if st.button("View Chain of Custody"):
+                custody_df = pd.read_sql(f"""
+                    SELECT coc.CustodyID, coc.ActionType, coc.Timestamp, coc.Notes,
+                           CONCAT(u.FirstName, ' ', u.LastName) as Custodian,
+                           CONCAT(p.FirstName, ' ', p.LastName) as PreviousCustodian
+                    FROM ChainOfCustody coc
+                    JOIN "User" u ON coc.UserID = u.UserID
+                    LEFT JOIN "User" p ON coc.PreviousCustodianID = p.UserID
+                    WHERE coc.EvidenceID = {evidence_options[selected_evidence]}
+                    ORDER BY coc.Timestamp
+                """, conn)
+                
+                if not custody_df.empty:
+                    st.dataframe(custody_df)
+                else:
+                    st.info("No chain of custody records found for this evidence")
+            
+            conn.close()
+        
+        with tab2:
+            st.subheader("Add Custody Record")
+            conn = get_connection()
+            
+            # Get evidence for dropdown
+            evidence_df = pd.read_sql("""
+                SELECT e.EvidenceID, CONCAT(e.EvidenceID, ': ', e.Description) as EvidenceDesc
+                FROM Evidence e
+                WHERE e.Status = 'Active'
+                ORDER BY e.EvidenceID
+            """, conn)
+            evidence_options = {row['EvidenceDesc']: row['EvidenceID'] for _, row in evidence_df.iterrows()}
+            
+            # Get users for dropdown
+            users_df = pd.read_sql('SELECT UserID, CONCAT(FirstName, \' \', LastName) as Name FROM "User" WHERE Status = \'Active\' ORDER BY Name', conn)
+            user_options = {row['Name']: row['UserID'] for _, row in users_df.iterrows()}
+            
+            # Form fields
+            selected_evidence = st.selectbox("Select Evidence", list(evidence_options.keys()), key="add_custody_evidence")
+            action_type = st.selectbox("Action Type", ["Collected", "Transferred", "Analyzed", "Stored", "Retrieved", "Returned", "Destroyed", "Archived"])
+            notes = st.text_area("Notes")
+            
+            # Get the last custodian
+            if selected_evidence:
+                last_custody = pd.read_sql(f"""
+                    SELECT coc.UserID, CONCAT(u.FirstName, ' ', u.LastName) as Name
+                    FROM ChainOfCustody coc
+                    JOIN "User" u ON coc.UserID = u.UserID
+                    WHERE coc.EvidenceID = {evidence_options[selected_evidence]}
+                    ORDER BY coc.Timestamp DESC
+                    LIMIT 1
+                """, conn)
+                
+                if not last_custody.empty:
+                    last_custodian_id = last_custody.iloc[0]['UserID']
+                    last_custodian_name = last_custody.iloc[0]['Name']
+                    st.write(f"Current custodian: **{last_custodian_name}**")
+                else:
+                    last_custodian_id = None
+                    st.write("No previous custodian")
+            
+            if st.button("Add Custody Record"):
+                if selected_evidence and action_type:
+                    cur = conn.cursor()
+                    try:
+                        cur.execute(
+                            """INSERT INTO ChainOfCustody 
+                               (EvidenceID, UserID, ActionType, Timestamp, Notes, PreviousCustodianID) 
+                               VALUES (%s, %s, %s, %s, %s, %s) RETURNING CustodyID""",
+                            (evidence_options[selected_evidence], st.session_state.user_id, 
+                             action_type, datetime.now(), notes, 
+                             last_custodian_id if 'last_custodian_id' in locals() else None)
+                        )
+                        
+                        new_custody_id = cur.fetchone()[0]
+                        
+                        # Log the action
+                        cur.execute(
+                            """INSERT INTO AccessLog 
+                               (UserID, EvidenceID, AccessTimestamp, ActionType, IPAddress, Notes) 
+                               VALUES (%s, %s, %s, %s, %s, %s)""",
+                            (st.session_state.user_id, evidence_options[selected_evidence], 
+                             datetime.now(), f"Chain of Custody: {action_type}", 
+                             "127.0.0.1", f"Added custody record #{new_custody_id}")
+                        )
+                        
+                        conn.commit()
+                        st.success(f"Custody record added successfully with ID: {new_custody_id}")
+                    except Exception as e:
+                        conn.rollback()
+                        st.error(f"Error adding custody record: {e}")
+                    finally:
+                        cur.close()
+                else:
+                    st.warning("Please fill in all required fields")
+            
+            conn.close()
 
-              <div className="mt-6">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Case Number</TableHead>
-                      <TableHead>Title</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Creation Date</TableHead>
-                      <TableHead>Assigned Officers</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {cases
-                      .filter((c) => filterBySearchTerm(c, "case"))
-                      .map((c) => (
-                        <TableRow key={c.case_id}>
-                          <TableCell>{c.case_number}</TableCell>
-                          <TableCell>{c.title}</TableCell>
-                          <TableCell>
-                            <Badge
-                              variant={
-                                c.status === "Active" ? "default" : c.status === "Closed" ? "secondary" : "outline"
-                              }
-                            >
-                              {c.status}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>{format(c.creation_date, "PP")}</TableCell>
-                          <TableCell>{getCaseOfficers(c.case_id).join(", ") || "None"}</TableCell>
-                          <TableCell>
-                            <div className="flex space-x-2">
-                              <Button variant="outline" size="icon" onClick={() => handleEdit(c.case_id, "case")}>
-                                <Edit className="h-4 w-4" />
-                              </Button>
-                              <AlertDialog>
-                                <AlertDialogTrigger asChild>
-                                  <Button variant="outline" size="icon" className="text-red-500">
-                                    <Trash2 className="h-4 w-4" />
-                                  </Button>
-                                </AlertDialogTrigger>
-                                <AlertDialogContent>
-                                  <AlertDialogHeader>
-                                    <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-                                    <AlertDialogDescription>
-                                      This action cannot be undone. This will permanently delete the case and all
-                                      associated evidence.
-                                    </AlertDialogDescription>
-                                  </AlertDialogHeader>
-                                  <AlertDialogFooter>
-                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                    <AlertDialogAction onClick={() => handleDelete(c.case_id, "case")}>
-                                      Delete
-                                    </AlertDialogAction>
-                                  </AlertDialogFooter>
-                                </AlertDialogContent>
-                              </AlertDialog>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                  </TableBody>
-                </Table>
-              </div>
-
-              <div className="mt-6">
-                <h3 className="text-lg font-medium mb-4">Assign Officer to Case</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="officer-case-officer">Officer</Label>
-                    <Select
-                      value={newOfficerCase.officer_id}
-                      onValueChange={(value) => setNewOfficerCase({ ...newOfficerCase, officer_id: value })}
-                    >
-                      <SelectTrigger id="officer-case-officer">
-                        <SelectValue placeholder="Select officer" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {officers.map((officer) => (
-                          <SelectItem key={officer.officer_id} value={officer.officer_id.toString()}>
-                            {officer.name} ({officer.badge_number})
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="officer-case-case">Case</Label>
-                    <Select
-                      value={newOfficerCase.case_id}
-                      onValueChange={(value) => setNewOfficerCase({ ...newOfficerCase, case_id: value })}
-                    >
-                      <SelectTrigger id="officer-case-case">
-                        <SelectValue placeholder="Select case" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {cases.map((c) => (
-                          <SelectItem key={c.case_id} value={c.case_id.toString()}>
-                            {c.case_number} - {c.title}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                <Button onClick={handleAddOfficerCase} className="mt-4">
-                  Assign Officer to Case
-                </Button>
-
-                <div className="mt-6">
-                  <h3 className="text-lg font-medium mb-4">Case Assignments</h3>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Officer</TableHead>
-                        <TableHead>Case</TableHead>
-                        <TableHead>Actions</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {officerCases.map((oc) => (
-                        <TableRow key={`${oc.officer_id}-${oc.case_id}`}>
-                          <TableCell>{getOfficerName(oc.officer_id)}</TableCell>
-                          <TableCell>{getCaseTitle(oc.case_id)}</TableCell>
-                          <TableCell>
-                            <AlertDialog>
-                              <AlertDialogTrigger asChild>
-                                <Button variant="outline" size="icon" className="text-red-500">
-                                  <Trash2 className="h-4 w-4" />
-                                </Button>
-                              </AlertDialogTrigger>
-                              <AlertDialogContent>
-                                <AlertDialogHeader>
-                                  <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-                                  <AlertDialogDescription>
-                                    This action cannot be undone. This will remove the officer from this case.
-                                  </AlertDialogDescription>
-                                </AlertDialogHeader>
-                                <AlertDialogFooter>
-                                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                  <AlertDialogAction
-                                    onClick={() =>
-                                      handleDelete({ officer_id: oc.officer_id, case_id: oc.case_id }, "officer_case")
-                                    }
-                                  >
-                                    Remove
-                                  </AlertDialogAction>
-                                </AlertDialogFooter>
-                              </AlertDialogContent>
-                            </AlertDialog>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* Evidence Tab */}
-        <TabsContent value="evidence">
-          <Card>
-            <CardHeader>
-              <CardTitle>Evidence</CardTitle>
-              <CardDescription>Manage digital evidence</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="evidence-name">Name</Label>
-                    <Input
-                      id="evidence-name"
-                      value={newEvidence.name}
-                      onChange={(e) => setNewEvidence({ ...newEvidence, name: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="evidence-file-path">File Path</Label>
-                    <Input
-                      id="evidence-file-path"
-                      value={newEvidence.file_path}
-                      onChange={(e) => setNewEvidence({ ...newEvidence, file_path: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="evidence-hash">Hash Value</Label>
-                    <Input
-                      id="evidence-hash"
-                      value={newEvidence.hash_value}
-                      onChange={(e) => setNewEvidence({ ...newEvidence, hash_value: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="evidence-size">Size (MB)</Label>
-                    <Input
-                      id="evidence-size"
-                      type="number"
-                      step="0.1"
-                      value={newEvidence.size}
-                      onChange={(e) => setNewEvidence({ ...newEvidence, size: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Collection Date</Label>
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <Button variant="outline" className="w-full justify-start text-left font-normal">
-                          <CalendarIcon className="mr-2 h-4 w-4" />
-                          {newEvidence.collection_date ? format(newEvidence.collection_date, "PPP") : "Select date"}
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-auto p-0">
-                        <Calendar
-                          mode="single"
-                          selected={newEvidence.collection_date}
-                          onSelect={(date) => setNewEvidence({ ...newEvidence, collection_date: date })}
-                          initialFocus
-                        />
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="evidence-case">Case</Label>
-                    <Select
-                      value={newEvidence.case_id}
-                      onValueChange={(value) => setNewEvidence({ ...newEvidence, case_id: value })}
-                    >
-                      <SelectTrigger id="evidence-case">
-                        <SelectValue placeholder="Select case" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {cases.map((c) => (
-                          <SelectItem key={c.case_id} value={c.case_id.toString()}>
-                            {c.case_number} - {c.title}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="evidence-type">Evidence Type</Label>
-                    <Select
-                      value={newEvidence.evidence_type_id}
-                      onValueChange={(value) => setNewEvidence({ ...newEvidence, evidence_type_id: value })}
-                    >
-                      <SelectTrigger id="evidence-type">
-                        <SelectValue placeholder="Select type" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {evidenceTypes.map((et) => (
-                          <SelectItem key={et.evidence_type_id} value={et.evidence_type_id.toString()}>
-                            {et.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2 md:col-span-2">
-                    <Label htmlFor="evidence-description">Description</Label>
-                    <Textarea
-                      id="evidence-description"
-                      value={newEvidence.description}
-                      onChange={(e) => setNewEvidence({ ...newEvidence, description: e.target.value })}
-                      className="min-h-[100px]"
-                    />
-                  </div>
-                </div>
-                <Button onClick={handleAddEvidence}>{editMode ? "Update Evidence" : "Add Evidence"}</Button>
-              </div>
-
-              <div className="mt-6">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Type</TableHead>
-                      <TableHead>Case</TableHead>
-                      <TableHead>Collection Date</TableHead>
-                      <TableHead>Size (MB)</TableHead>
-                      <TableHead>Tags</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {evidence
-                      .filter((e) => filterBySearchTerm(e, "evidence"))
-                      .map((e) => (
-                        <TableRow key={e.evidence_id}>
-                          <TableCell>{e.name}</TableCell>
-                          <TableCell>{getEvidenceTypeName(e.evidence_type_id)}</TableCell>
-                          <TableCell>{getCaseTitle(e.case_id)}</TableCell>
-                          <TableCell>{format(e.collection_date, "PP")}</TableCell>
-                          <TableCell>{e.size.toFixed(1)}</TableCell>
-                          <TableCell>
-                            <div className="flex flex-wrap gap-1">
-                              {getEvidenceTags(e.evidence_id).map((tag, index) => (
-                                <Badge key={index} variant="outline">
-                                  {tag}
-                                </Badge>
-                              ))}
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex space-x-2">
-                              <Button
-                                variant="outline"
-                                size="icon"
-                                onClick={() => handleEdit(e.evidence_id, "evidence")}
-                              >
-                                <Edit className="h-4 w-4" />
-                              </Button>
-                              <AlertDialog>
-                                <AlertDialogTrigger asChild>
-                                  <Button variant="outline" size="icon" className="text-red-500">
-                                    <Trash2 className="h-4 w-4" />
-                                  </Button>
-                                </AlertDialogTrigger>
-                                <AlertDialogContent>
-                                  <AlertDialogHeader>
-                                    <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-                                    <AlertDialogDescription>
-                                      This action cannot be undone. This will permanently delete the evidence and all
-                                      associated custody records.
-                                    </AlertDialogDescription>
-                                  </AlertDialogHeader>
-                                  <AlertDialogFooter>
-                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                    <AlertDialogAction onClick={() => handleDelete(e.evidence_id, "evidence")}>
-                                      Delete
-                                    </AlertDialogAction>
-                                  </AlertDialogFooter>
-                                </AlertDialogContent>
-                              </AlertDialog>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                  </TableBody>
-                </Table>
-              </div>
-
-              <div className="mt-6">
-                <h3 className="text-lg font-medium mb-4">Add Tag to Evidence</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="evidence-tag-evidence">Evidence</Label>
-                    <Select
-                      value={newEvidenceTag.evidence_id}
-                      onValueChange={(value) => setNewEvidenceTag({ ...newEvidenceTag, evidence_id: value })}
-                    >
-                      <SelectTrigger id="evidence-tag-evidence">
-                        <SelectValue placeholder="Select evidence" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {evidence.map((e) => (
-                          <SelectItem key={e.evidence_id} value={e.evidence_id.toString()}>
-                            {e.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="evidence-tag-tag">Tag</Label>
-                    <Select
-                      value={newEvidenceTag.tag_id}
-                      onValueChange={(value) => setNewEvidenceTag({ ...newEvidenceTag, tag_id: value })}
-                    >
-                      <SelectTrigger id="evidence-tag-tag">
-                        <SelectValue placeholder="Select tag" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {tags.map((t) => (
-                          <SelectItem key={t.tag_id} value={t.tag_id.toString()}>
-                            {t.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                <Button onClick={handleAddEvidenceTag} className="mt-4">
-                  Add Tag to Evidence
-                </Button>
-
-                <div className="mt-6">
-                  <h3 className="text-lg font-medium mb-4">Evidence Tags</h3>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Evidence</TableHead>
-                        <TableHead>Tag</TableHead>
-                        <TableHead>Actions</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {evidenceTags.map((et) => (
-                        <TableRow key={`${et.evidence_id}-${et.tag_id}`}>
-                          <TableCell>{getEvidenceName(et.evidence_id)}</TableCell>
-                          <TableCell>{getTagName(et.tag_id)}</TableCell>
-                          <TableCell>
-                            <AlertDialog>
-                              <AlertDialogTrigger asChild>
-                                <Button variant="outline" size="icon" className="text-red-500">
-                                  <Trash2 className="h-4 w-4" />
-                                </Button>
-                              </AlertDialogTrigger>
-                              <AlertDialogContent>
-                                <AlertDialogHeader>
-                                  <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-                                  <AlertDialogDescription>
-                                    This action cannot be undone. This will remove this tag from the evidence.
-                                  </AlertDialogDescription>
-                                </AlertDialogHeader>
-                                <AlertDialogFooter>
-                                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                  <AlertDialogAction
-                                    onClick={() =>
-                                      handleDelete({ evidence_id: et.evidence_id, tag_id: et.tag_id }, "evidence_tag")
-                                    }
-                                  >
-                                    Remove
-                                  </AlertDialogAction>
-                                </AlertDialogFooter>
-                              </AlertDialogContent>
-                            </AlertDialog>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* Chain of Custody Tab */}
-        <TabsContent value="custody">
-          <Card>
-            <CardHeader>
-              <CardTitle>Chain of Custody</CardTitle>
-              <CardDescription>Track evidence handling and transfers</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="custody-evidence">Evidence</Label>
-                    <Select
-                      value={newChainOfCustody.evidence_id}
-                      onValueChange={(value) => setNewChainOfCustody({ ...newChainOfCustody, evidence_id: value })}
-                    >
-                      <SelectTrigger id="custody-evidence">
-                        <SelectValue placeholder="Select evidence" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {evidence.map((e) => (
-                          <SelectItem key={e.evidence_id} value={e.evidence_id.toString()}>
-                            {e.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="custody-officer">Officer</Label>
-                    <Select
-                      value={newChainOfCustody.officer_id}
-                      onValueChange={(value) => setNewChainOfCustody({ ...newChainOfCustody, officer_id: value })}
-                    >
-                      <SelectTrigger id="custody-officer">
-                        <SelectValue placeholder="Select officer" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {officers.map((o) => (
-                          <SelectItem key={o.officer_id} value={o.officer_id.toString()}>
-                            {o.name} ({o.badge_number})
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="custody-action">Action</Label>
-                    <Select
-                      value={newChainOfCustody.action}
-                      onValueChange={(value) => setNewChainOfCustody({ ...newChainOfCustody, action: value })}
-                    >
-                      <SelectTrigger id="custody-action">
-                        <SelectValue placeholder="Select action" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="Collected">Collected</SelectItem>
-                        <SelectItem value="Transferred">Transferred</SelectItem>
-                        <SelectItem value="Analyzed">Analyzed</SelectItem>
-                        <SelectItem value="Stored">Stored</SelectItem>
-                        <SelectItem value="Retrieved">Retrieved</SelectItem>
-                        <SelectItem value="Returned">Returned</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Timestamp</Label>
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <Button variant="outline" className="w-full justify-start text-left font-normal">
-                          <CalendarIcon className="mr-2 h-4 w-4" />
-                          {newChainOfCustody.timestamp
-                            ? format(newChainOfCustody.timestamp, "PPP HH:mm")
-                            : "Select date and time"}
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-auto p-0">
-                        <Calendar
-                          mode="single"
-                          selected={newChainOfCustody.timestamp}
-                          onSelect={(date) => setNewChainOfCustody({ ...newChainOfCustody, timestamp: date })}
-                          initialFocus
-                        />
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-                  <div className="space-y-2 md:col-span-2">
-                    <Label htmlFor="custody-notes">Notes</Label>
-                    <Textarea
-                      id="custody-notes"
-                      value={newChainOfCustody.notes}
-                      onChange={(e) => setNewChainOfCustody({ ...newChainOfCustody, notes: e.target.value })}
-                      className="min-h-[100px]"
-                    />
-                  </div>
-                </div>
-                <Button onClick={handleAddChainOfCustody}>Add Custody Record</Button>
-              </div>
-
-              <div className="mt-6">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Timestamp</TableHead>
-                      <TableHead>Evidence</TableHead>
-                      <TableHead>Officer</TableHead>
-                      <TableHead>Action</TableHead>
-                      <TableHead>Notes</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {chainOfCustody.map((c) => (
-                      <TableRow key={c.custody_id}>
-                        <TableCell>{format(c.timestamp, "PPP HH:mm")}</TableCell>
-                        <TableCell>{getEvidenceName(c.evidence_id)}</TableCell>
-                        <TableCell>{getOfficerName(c.officer_id)}</TableCell>
-                        <TableCell>{c.action}</TableCell>
-                        <TableCell className="max-w-xs truncate">{c.notes}</TableCell>
-                        <TableCell>
-                          <AlertDialog>
-                            <AlertDialogTrigger asChild>
-                              <Button variant="outline" size="icon" className="text-red-500">
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                            </AlertDialogTrigger>
-                            <AlertDialogContent>
-                              <AlertDialogHeader>
-                                <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-                                <AlertDialogDescription>
-                                  This action cannot be undone. This will permanently delete this custody record.
-                                </AlertDialogDescription>
-                              </AlertDialogHeader>
-                              <AlertDialogFooter>
-                                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                <AlertDialogAction onClick={() => handleDelete(c.custody_id, "chain_of_custody")}>
-                                  Delete
-                                </AlertDialogAction>
-                              </AlertDialogFooter>
-                            </AlertDialogContent>
-                          </AlertDialog>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* Officers Tab */}
-        <TabsContent value="officers">
-          <Card>
-            <CardHeader>
-              <CardTitle>Officers</CardTitle>
-              <CardDescription>Manage officer records</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="officer-badge">Badge Number</Label>
-                    <Input
-                      id="officer-badge"
-                      value={newOfficer.badge_number}
-                      onChange={(e) => setNewOfficer({ ...newOfficer, badge_number: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="officer-name">Name</Label>
-                    <Input
-                      id="officer-name"
-                      value={newOfficer.name}
-                      onChange={(e) => setNewOfficer({ ...newOfficer, name: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="officer-rank">Rank</Label>
-                    <Select
-                      value={newOfficer.rank}
-                      onValueChange={(value) => setNewOfficer({ ...newOfficer, rank: value })}
-                    >
-                      <SelectTrigger id="officer-rank">
-                        <SelectValue placeholder="Select rank" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="Officer">Officer</SelectItem>
-                        <SelectItem value="Detective">Detective</SelectItem>
-                        <SelectItem value="Sergeant">Sergeant</SelectItem>
-                        <SelectItem value="Lieutenant">Lieutenant</SelectItem>
-                        <SelectItem value="Captain">Captain</SelectItem>
-                        <SelectItem value="Chief">Chief</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="officer-contact">Contact</Label>
-                    <Input
-                      id="officer-contact"
-                      value={newOfficer.contact}
-                      onChange={(e) => setNewOfficer({ ...newOfficer, contact: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="officer-department">Department</Label>
-                    <Select
-                      value={newOfficer.department_id}
-                      onValueChange={(value) => setNewOfficer({ ...newOfficer, department_id: value })}
-                    >
-                      <SelectTrigger id="officer-department">
-                        <SelectValue placeholder="Select department" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {departments.map((dept) => (
-                          <SelectItem key={dept.department_id} value={dept.department_id.toString()}>
-                            {dept.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                <Button onClick={handleAddOfficer}>{editMode ? "Update Officer" : "Add Officer"}</Button>
-              </div>
-
-              <div className="mt-6">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Badge Number</TableHead>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Rank</TableHead>
-                      <TableHead>Contact</TableHead>
-                      <TableHead>Department</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {officers
-                      .filter((officer) => filterBySearchTerm(officer, "officer"))
-                      .map((officer) => (
-                        <TableRow key={officer.officer_id}>
-                          <TableCell>{officer.badge_number}</TableCell>
-                          <TableCell>{officer.name}</TableCell>
-                          <TableCell>{officer.rank}</TableCell>
-                          <TableCell>{officer.contact}</TableCell>
-                          <TableCell>{getDepartmentName(officer.department_id)}</TableCell>
-                          <TableCell>
-                            <div className="flex space-x-2">
-                              <Button
-                                variant="outline"
-                                size="icon"
-                                onClick={() => handleEdit(officer.officer_id, "officer")}
-                              >
-                                <Edit className="h-4 w-4" />
-                              </Button>
-                              <AlertDialog>
-                                <AlertDialogTrigger asChild>
-                                  <Button variant="outline" size="icon" className="text-red-500">
-                                    <Trash2 className="h-4 w-4" />
-                                  </Button>
-                                </AlertDialogTrigger>
-                                <AlertDialogContent>
-                                  <AlertDialogHeader>
-                                    <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-                                    <AlertDialogDescription>
-                                      This action cannot be undone. This will permanently delete the officer record.
-                                    </AlertDialogDescription>
-                                  </AlertDialogHeader>
-                                  <AlertDialogFooter>
-                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                    <AlertDialogAction onClick={() => handleDelete(officer.officer_id, "officer")}>
-                                      Delete
-                                    </AlertDialogAction>
-                                  </AlertDialogFooter>
-                                </AlertDialogContent>
-                              </AlertDialog>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* Departments Tab */}
-        <TabsContent value="departments">
-          <Card>
-            <CardHeader>
-              <CardTitle>Departments</CardTitle>
-              <CardDescription>Manage law enforcement departments</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="department-name">Name</Label>
-                    <Input
-                      id="department-name"
-                      value={newDepartment.name}
-                      onChange={(e) => setNewDepartment({ ...newDepartment, name: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="department-location">Location</Label>
-                    <Input
-                      id="department-location"
-                      value={newDepartment.location}
-                      onChange={(e) => setNewDepartment({ ...newDepartment, location: e.target.value })}
-                    />
-                  </div>
-                </div>
-                <Button onClick={handleAddDepartment}>{editMode ? "Update Department" : "Add Department"}</Button>
-              </div>
-
-              <div className="mt-6">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>ID</TableHead>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Location</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {departments
-                      .filter((department) => filterBySearchTerm(department, "department"))
-                      .map((department) => (
-                        <TableRow key={department.department_id}>
-                          <TableCell>{department.department_id}</TableCell>
-                          <TableCell>{department.name}</TableCell>
-                          <TableCell>{department.location}</TableCell>
-                          <TableCell>
-                            <div className="flex space-x-2">
-                              <Button
-                                variant="outline"
-                                size="icon"
-                                onClick={() => handleEdit(department.department_id, "department")}
-                              >
-                                <Edit className="h-4 w-4" />
-                              </Button>
-                              <AlertDialog>
-                                <AlertDialogTrigger asChild>
-                                  <Button variant="outline" size="icon" className="text-red-500">
-                                    <Trash2 className="h-4 w-4" />
-                                  </Button>
-                                </AlertDialogTrigger>
-                                <AlertDialogContent>
-                                  <AlertDialogHeader>
-                                    <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-                                    <AlertDialogDescription>
-                                      This action cannot be undone. This will permanently delete the department.
-                                    </AlertDialogDescription>
-                                  </AlertDialogHeader>
-                                  <AlertDialogFooter>
-                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                    <AlertDialogAction
-                                      onClick={() => handleDelete(department.department_id, "department")}
-                                    >
-                                      Delete
-                                    </AlertDialogAction>
-                                  </AlertDialogFooter>
-                                </AlertDialogContent>
-                              </AlertDialog>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* Evidence Types Tab */}
-        <TabsContent value="evidence_types">
-          <Card>
-            <CardHeader>
-              <CardTitle>Evidence Types</CardTitle>
-              <CardDescription>Manage evidence type categories</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="evidence-type-name">Name</Label>
-                    <Input
-                      id="evidence-type-name"
-                      value={newEvidenceType.name}
-                      onChange={(e) => setNewEvidenceType({ ...newEvidenceType, name: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="evidence-type-description">Description</Label>
-                    <Input
-                      id="evidence-type-description"
-                      value={newEvidenceType.description}
-                      onChange={(e) => setNewEvidenceType({ ...newEvidenceType, description: e.target.value })}
-                    />
-                  </div>
-                </div>
-                <Button onClick={handleAddEvidenceType}>
-                  {editMode ? "Update Evidence Type" : "Add Evidence Type"}
-                </Button>
-              </div>
-
-              <div className="mt-6">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>ID</TableHead>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Description</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {evidenceTypes
-                      .filter((et) => filterBySearchTerm(et, "evidence_type"))
-                      .map((et) => (
-                        <TableRow key={et.evidence_type_id}>
-                          <TableCell>{et.evidence_type_id}</TableCell>
-                          <TableCell>{et.name}</TableCell>
-                          <TableCell>{et.description}</TableCell>
-                          <TableCell>
-                            <div className="flex space-x-2">
-                              <Button
-                                variant="outline"
-                                size="icon"
-                                onClick={() => handleEdit(et.evidence_type_id, "evidence_type")}
-                              >
-                                <Edit className="h-4 w-4" />
-                              </Button>
-                              <AlertDialog>
-                                <AlertDialogTrigger asChild>
-                                  <Button variant="outline" size="icon" className="text-red-500">
-                                    <Trash2 className="h-4 w-4" />
-                                  </Button>
-                                </AlertDialogTrigger>
-                                <AlertDialogContent>
-                                  <AlertDialogHeader>
-                                    <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-                                    <AlertDialogDescription>
-                                      This action cannot be undone. This will permanently delete the evidence type.
-                                    </AlertDialogDescription>
-                                  </AlertDialogHeader>
-                                  <AlertDialogFooter>
-                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                    <AlertDialogAction
-                                      onClick={() => handleDelete(et.evidence_type_id, "evidence_type")}
-                                    >
-                                      Delete
-                                    </AlertDialogAction>
-                                  </AlertDialogFooter>
-                                </AlertDialogContent>
-                              </AlertDialog>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* Tags Tab */}
-        <TabsContent value="tags">
-          <Card>
-            <CardHeader>
-              <CardTitle>Tags</CardTitle>
-              <CardDescription>Manage evidence tags</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="tag-name">Name</Label>
-                    <Input
-                      id="tag-name"
-                      value={newTag.name}
-                      onChange={(e) => setNewTag({ ...newTag, name: e.target.value })}
-                    />
-                  </div>
-                </div>
-                <Button onClick={handleAddTag}>{editMode ? "Update Tag" : "Add Tag"}</Button>
-              </div>
-
-              <div className="mt-6">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>ID</TableHead>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {tags
-                      .filter((tag) => filterBySearchTerm(tag, "tag"))
-                      .map((tag) => (
-                        <TableRow key={tag.tag_id}>
-                          <TableCell>{tag.tag_id}</TableCell>
-                          <TableCell>{tag.name}</TableCell>
-                          <TableCell>
-                            <div className="flex space-x-2">
-                              <Button variant="outline" size="icon" onClick={() => handleEdit(tag.tag_id, "tag")}>
-                                <Edit className="h-4 w-4" />
-                              </Button>
-                              <AlertDialog>
-                                <AlertDialogTrigger asChild>
-                                  <Button variant="outline" size="icon" className="text-red-500">
-                                    <Trash2 className="h-4 w-4" />
-                                  </Button>
-                                </AlertDialogTrigger>
-                                <AlertDialogContent>
-                                  <AlertDialogHeader>
-                                    <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-                                    <AlertDialogDescription>
-                                      This action cannot be undone. This will permanently delete the tag.
-                                    </AlertDialogDescription>
-                                  </AlertDialogHeader>
-                                  <AlertDialogFooter>
-                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                    <AlertDialogAction onClick={() => handleDelete(tag.tag_id, "tag")}>
-                                      Delete
-                                    </AlertDialogAction>
-                                  </AlertDialogFooter>
-                                </AlertDialogContent>
-                              </AlertDialog>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
-    </div>
-  )
-}
-
+if __name__ == "__main__":
+    main()
 
 
